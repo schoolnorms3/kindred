@@ -1,0 +1,176 @@
+"use client"
+
+import React, { useEffect, useState } from "react"
+import { useSearchParams } from "next/navigation"
+import { DiscoverFilters, filterCategories } from "@/components/discover/discover-filters"
+import { SchoolGrid } from "@/components/discover/school-grid"
+import { SortOptions } from "@/components/discover/sort-options"
+
+type SortOption = "fees-low-to-high" | "fees-high-to-low" | "name-asc" | "newest"
+
+export default function DiscoverClient() {
+  const searchParams = useSearchParams()
+
+  const [selectedFilters, setSelectedFilters] = useState<Record<string, string[]>>({})
+  const [sortBy, setSortBy] = useState<SortOption>("newest")
+  const [cityOptions, setCityOptions] = useState<string[] | undefined>(undefined)
+  const [stateOptions, setStateOptions] = useState<string[] | undefined>(undefined)
+  const [boardOptions, setBoardOptions] = useState<string[] | undefined>(undefined)
+
+  const mapping: Record<string, string> = {
+    Search: "search",
+    Curriculum: "curriculum",
+    "School Type": "type",
+    Facilities: "facilities",
+    "Fee Range": "fee",
+    State: "state",
+    City: "city",
+  }
+
+  // reverse map: param key -> category name
+  const reverseMap: Record<string, string> = Object.fromEntries(
+    Object.entries(mapping).map(([k, v]) => [v, k]),
+  )
+
+  // initialize from URL params (e.g., ?type=montessori)
+  useEffect(() => {
+    const params = Object.fromEntries(new URLSearchParams(String(searchParams)).entries())
+    if (!Object.keys(params).length) return
+
+    const next: Record<string, string[]> = {}
+    Object.entries(params).forEach(([k, v]) => {
+      const category = reverseMap[k] || k
+      const rawVals = v.split(",").map((x) => decodeURIComponent(x))
+
+      // canonicalize values to match the display options (e.g., "Montessori", "CBSE")
+      const fc = filterCategories.find((f) => f.name === category)
+      const vals = rawVals.map((rv) => {
+        if (!fc) {
+          // fallback: title-case common words, preserve all-uppercase acronyms
+          if (rv.toUpperCase() === rv) return rv
+          return rv
+            .split(" ")
+            .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+            .join(" ")
+        }
+
+        const match = fc.options.find((o) => o.toLowerCase() === rv.toLowerCase())
+        return match ?? rv
+      })
+
+      next[category] = vals
+    })
+
+    setSelectedFilters(next)
+  }, [searchParams])
+
+  // Fetch boards for curriculum filter
+  useEffect(() => {
+    let mounted = true
+    fetch("/api/boards")
+      .then((r) => {
+        if (!r.ok) throw new Error("Failed to fetch boards")
+        return r.json()
+      })
+      .then((data) => {
+        if (!mounted) return
+        const boards = (Array.isArray(data) ? data : []).map((b: any) => String(b.name).trim()).filter(Boolean)
+        if (boards.length > 0) setBoardOptions(boards)
+      })
+      .catch(() => {})
+    return () => { mounted = false }
+  }, [])
+
+  // fetch available cities
+  useEffect(() => {
+    let mounted = true
+    fetch("/api/cities?limit=500")
+      .then((r) => {
+        if (!r.ok) throw new Error("Failed to fetch cities")
+        return r.json()
+      })
+      .then((json) => {
+        if (!mounted) return
+        const cities = (json.data || []).map((c: any) =>
+          typeof c === "string" ? c.trim() : String(c.city || c).trim()
+        )
+        setCityOptions(cities)
+      })
+      .catch(() => {
+        if (mounted) setCityOptions(undefined)
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    let mounted = true
+    fetch("/api/states")
+      .then((r) => {
+        if (!r.ok) throw new Error("Failed to fetch states")
+        return r.json()
+      })
+      .then((json) => {
+        if (!mounted) return
+        // API returns { states: [...] } where each item may be an object with .name or a string
+        const raw = json.states || json.data || []
+        const states = raw.map((s: any) => (typeof s === "string" ? s : s.name || String(s)).trim()).filter(Boolean)
+        if (states.length > 0) setStateOptions(states)
+      })
+      .catch(() => {
+        if (mounted) setStateOptions(undefined)
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  function onToggle(category: string, option: string) {
+    setSelectedFilters((prev) => {
+      const current = prev[category] || []
+      const updated = current.includes(option) ? current.filter((o) => o !== option) : [...current, option]
+      return { ...prev, [category]: updated }
+    })
+  }
+
+  function onClear() {
+    setSelectedFilters({})
+  }
+
+  // map category keys to normalized filter keys used by SchoolGrid
+  const filters: Record<string, string[]> = {}
+  Object.entries(selectedFilters).forEach(([cat, vals]) => {
+    const key = mapping[cat] || cat.toLowerCase().replace(/\s+/g, "-")
+    filters[key] = vals
+  })
+
+  return (
+    <div className="flex flex-col lg:flex-row gap-8">
+      <aside className="hidden lg:block lg:w-72 flex-shrink-0">
+        <div className="sticky top-24">
+          <DiscoverFilters
+            selectedFilters={selectedFilters}
+            onToggle={onToggle}
+            onClear={onClear}
+            cityOptions={cityOptions}
+            stateOptions={stateOptions}
+            boardOptions={boardOptions}
+          />
+        </div>
+      </aside>
+
+      <div className="flex-1">
+        <div className="mb-6 flex justify-between items-center flex-wrap gap-4">
+          <p className="text-muted-foreground">
+            Showing schools
+          </p>
+          <SortOptions onSortChange={setSortBy} currentSort={sortBy} />
+        </div>
+        <SchoolGrid filters={filters} sortBy={sortBy} />
+      </div>
+    </div>
+  )
+}
